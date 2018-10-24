@@ -1,0 +1,2 @@
+# notplaying
+Not Playing Bot
