@@ -5,114 +5,231 @@ import html
 import re
 import time
 import json
+import random
 import logging
 
 logging.getLogger().setLevel(logging.DEBUG)
-
-account_id = 9406
-
 np_pattern = re.compile('#<span>bot</span>.+<p>(.+)\s-\s"([^"]+)"</p>')
+paren_pattern = re.compile('\s+(\(.+?\))')
 
-def formatted_toot(title):
+ACCOUNT_ID = 9406
+MAXIMUM_HISTORICAL_TOOTS = 5000
+CACHE_FILE = 'toot.cache'
+
+
+class Producer:
     """
-    Return a formatted string suitable for tooting.
-
-    Args:
-        title (str): A song title to toot
-
-    Returns:
-        str: A formatted string ready for tooting
+    Only the dopest, most fire producers to light this joint, by which I mean generate a randomized
+    artist and song title from two or more sets of artists and titles.
     """
-    return f"""
-🎶 #notplaying #np #fediplay #bot 🎶
+    def __init__(self, artists, titles):
+        """
+        Constructor.
+        
+        Args:
+            artists (list): List of artist names to remix
+            titles (list): List of title names to remix
+        """
+        self.artists = artists
+        self.titles = titles
+        self.suffixes = [
+            "(Studio Version)",
+            "(Live)",
+            "(Remix)",
+            "(Radio Edit)",
+            "(7-inch)",
+            "(12-inch)",
+            "(Dance Mix)",
+            "(Club Mix)",
+            "(Instrumental)",
+            "(Acapella)",
+            "(Doo-Wop Version)",
+            "(Electric Version)",
+            "(Acoustic Verison)",
+            "(Alternate Take)",
+            "(False Start)",
+            "(Redux)",
+        ]
+        self.extract_suffixes()
 
-{title}
-"""
+    def remix(self):
+        """
+        Generate a randomized song.
+        """
+        title = random.choice(self.types)()
+        if random.choice([True, False]):
+            return title
+        if not self.suffixes:
+            return title
+        return '{} {}'.format(title, random.choice(self.suffixes))
 
-def remix(artists, titles):
+    def extract_suffixes(self):
+        """
+        Remove the trailing (...) strings from our song titles so we can randomly assign a new one.
+        """
+        titles = []
+        for t in self.titles:
+            self.suffixes += paren_pattern.findall(t)
+            titles.append(paren_pattern.sub('', t))
+        self.titles = titles
+
+    def mix_mashup(self):
+        return '{} vs {} - {} {}'.format(
+            *random.sample(self.artists, 2),
+            *random.sample(self.titles, 2)
+        )
+
+    def mix_duet(self):
+        return '{} feat. {} - {}'.format(
+            *random.sample(self.artists, 2),
+            random.choice(self.titles)
+        )
+
+    def mix_cover(self):
+        index = random.sample([0, 1], 2)
+        return '{} - {}'.format(self.artists[index[0]], self.titles[index[1]])
+
+    @property
+    def types(self):
+        """
+        The list of methods on the current instance that define remix times.
+        """
+        return [getattr(self, method) for method in dir(self) if method.startswith('mix_')]
+
+
+class Tooter:
     """
-    Imagine a new song by combining artists and song titles.
-
-    Args:
-        artists (list): the list of artists to use
-        titles (list): the list of song titles to use
-
-    Returns:
-        str: The next deep banger
+    Cache toots from the toot-lab and post new ones to the @notplaying account.
     """
-    return '{} vs {} - {} {}'.format(*artists, *titles)
+    def __init__(self, token, url):
+        self.client = Mastodon(access_token=token, api_base_url=url)
+        self._toot_cache = []
+        self.toot_format = '\n'.join([
+            '🎶 #notplaying #np #fediplay #bot 🎶',
+            '',
+            '{title}'
+        ])
 
-def get_random_toot(toots):
-    """
-    Select a random toot from a list of toots and return the HTML-decoded content.
+    def toot(self, title):
+        self.client.toot(self.formatted_toot(title))
 
-    Args:
-        toots (list): a list of dictionaries
+    def formatted_toot(self, title):
+        """
+        Return a formatted string suitable for tooting.
 
-    Returns:
-        str: the HTML-decoded content of a toot
-    """
-    return html.unescape(random.choice(toots)['content'])
+        Args:
+            title (str): A song title to toot
+
+        Returns:
+            str: A formatted string ready for tooting
+        """
+        return self.toot_format.format(title=title)
+
+    def get_random_toot(self):
+        """
+        Select a random toot from a list of toots and return the HTML-decoded content.
+
+        Args:
+            toots (list): a list of dictionaries
+
+        Returns:
+            str: the HTML-decoded content of a toot
+        """
+        return html.unescape(random.choice(self.toots)['content'])
 
 
-def get_supergroup(now_playing_toots):
-    """
-    Randomly select artists and song titles from the #nowplaying hashtag on mastodon
+    def get_supergroup(self):
+        """
+        Randomly select artists and song titles from the toot cache
 
-    Args:
-        now_playing_toots (list): A list of dictionaries including the 'content' key
+        Returns:
+            list: A list of (artist name string, song title string) tuples
+        """
+        supergroup = []
+        while len(supergroup) != 2:
+            m = np_pattern.findall(self.get_random_toot())
+            if m and m[0] not in self.toots:
+                if m[0][0] not in [x[0] for x in supergroup]:
+                    supergroup.append(m[0])
+        return zip(*supergroup)
 
-    Returns:
-        list: A list of (artist name string, song title string) tuples
-    """
-    supergroup = []
-    while len(supergroup) != 2:
-        m = np_pattern.findall(get_random_toot(now_playing_toots))
-        if m and m[0] not in now_playing_toots:
-            if m[0][0] not in [x[0] for x in supergroup]:
-                supergroup.append(m[0])
-    return supergroup
+    def _write_cache(self):
+        """
+        Write the toot cache to disk.
+        """
+        with open(CACHE_FILE, 'w') as f:
+            logging.debug("Writing cache...")
+            json.dump(self._toot_cache, f, indent=4, default=str)
 
-def write_cache(toots):
-    with open('toot.cache', 'w') as f:
-        json.dump(toots, f, indent=4, default=str)
+    def _load_cache(self):
+        """
+        Load the toot cache from disk.
+        """
+        self._toot_cache = []
+        try:
+            logging.debug("Loading toot cache...")
+            with open(CACHE_FILE) as f:
+                self._toot_cache = json.load(f)
+        except:
+            logging.debug("Nothing cached.")
 
-def get_cached_toots():
-    try:
-        with open('toot.cache') as f:
-            return json.load(f)
-    except:
-        return []
+    def _backfill_cache(self):
+        """
+        If the cache is light, backfill it from live data.
+        """
+        while len(self._toot_cache) < MAXIMUM_HISTORICAL_TOOTS:
+            self._toot_cache += self.client.account_statuses(
+                id=ACCOUNT_ID,
+                limit=100,
+                max_id=self.oldest_toot
+            )
+            logging.debug("Refreshing Cache: {} toots".format(len(self._toot_cache)))
+            time.sleep(0.2)
 
-def max_id(toots):
-    return min([t['id'] for t in toots]) if toots else None
+    def _refresh_cache(self):
+        """
+        Get toots tooted since the latest cached toot.
+        """
+        # OHNO: lossy, if there have been more than 100 toots since since_id
+        logging.info("Refreshing toot list...")
+        self._toot_cache += self.client.account_statuses(
+            id=ACCOUNT_ID,
+            limit=100,
+            since_id=self.newest_toot
+        )
 
-def get_historical_toots(client):
-    count = 0
-    while count < 10 and len(toots) < 1000:
-        toots += client.account_statuses(id=account_id, limit=100, max_id=max_id(toots))
-        count += 1
-        time.sleep(0.2)
-    return toots
+    @property
+    def newest_toot(self):
+        return max([t['id'] for t in self._toot_cache]) if self._toot_cache else None
 
-def get_new_toots(client, since_id):
-    # OHNO: lossy, if there have been more than 100 toots since since_id
-    logging.info("Refreshing toot list...")
-    return client.account_statuses(id=account_id, limit=100, since_id=since_id)
+    @property
+    def oldest_toot(self):
+        return min([t['id'] for t in self._toot_cache]) if self._toot_cache else None
+
+    @property
+    def toots(self):
+        if not self._toot_cache:
+            self._load_cache()
+            self._backfill_cache()
+            self._refresh_cache()
+            self._write_cache()
+        return self._toot_cache
+
 
 def main():
-    mastodon = Mastodon(
-        access_token = os.environ.get('MASTODON_TOKEN'),
-        api_base_url = 'https://botsin.space/'
+    tooter = Tooter(
+        token=os.environ.get('MASTODON_TOKEN'),
+        url='https://botsin.space/'
     )
-    toots = get_cached_toots() or get_historical_toots(mastodon)
-    toots += get_new_toots(mastodon, max_id(toots))
-    write_cache(toots)
 
-    (artists, titles) = zip(*get_supergroup(toots))
-    new_toot = formatted_toot(remix(artists, titles))
-    logging.debug(new_toot)
-    mastodon.toot(new_toot)
+    (artists, titles) = tooter.get_supergroup()
+    song_title = Producer(list(artists), list(titles)).remix()
+    tooter.toot(song_title)
+
+    #for i in range(10):
+    #    (artists, titles) = tooter.get_supergroup()
+    #    new_toot = Producer(list(artists), list(titles)).remix()
+    #    logging.debug(new_toot)
 
 
 if __name__ == '__main__':
