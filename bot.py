@@ -1,7 +1,15 @@
 from mastodon import Mastodon
+import os
 import random
 import html
 import re
+import time
+import json
+import logging
+
+logging.getLogger().setLevel(logging.DEBUG)
+
+account_id = 9406
 
 np_pattern = re.compile('#<span>bot</span>.+<p>(.+)\s-\s"([^"]+)"</p>')
 
@@ -65,14 +73,46 @@ def get_supergroup(now_playing_toots):
                 supergroup.append(m[0])
     return supergroup
 
+def write_cache(toots):
+    with open('toot.cache', 'w') as f:
+        json.dump(toots, f, indent=4, default=str)
+
+def get_cached_toots():
+    try:
+        with open('toot.cache') as f:
+            return json.load(f)
+    except:
+        return []
+
+def max_id(toots):
+    return min([t['id'] for t in toots]) if toots else None
+
+def get_historical_toots(client):
+    count = 0
+    while count < 10 and len(toots) < 1000:
+        toots += client.account_statuses(id=account_id, limit=100, max_id=max_id(toots))
+        count += 1
+        time.sleep(0.2)
+    return toots
+
+def get_new_toots(client, since_id):
+    # OHNO: lossy, if there have been more than 100 toots since since_id
+    logging.info("Refreshing toot list...")
+    return client.account_statuses(id=account_id, limit=100, since_id=since_id)
+
 def main():
     mastodon = Mastodon(
-        access_token = '116b8605df66ecd014b864935a94ca55341fc1bd81574418e86d417720075372',
+        access_token = os.environ.get('MASTODON_TOKEN'),
         api_base_url = 'https://botsin.space/'
     )
-    toots = mastodon.timeline_hashtag('nowplaying', limit=40)
+    toots = get_cached_toots() or get_historical_toots(mastodon)
+    toots += get_new_toots(mastodon, max_id(toots))
+    write_cache(toots)
+
     (artists, titles) = zip(*get_supergroup(toots))
-    mastodon.toot(formatted_toot(remix(artists, titles)))
+    new_toot = formatted_toot(remix(artists, titles))
+    logging.debug(new_toot)
+    mastodon.toot(new_toot)
 
 
 if __name__ == '__main__':
